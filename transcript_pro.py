@@ -7,8 +7,8 @@ from PIL import Image
 import io
 import base64
 from datetime import datetime
-# Import pandas at the beginning to avoid dynamic import issues
-import pandas as pd
+import csv
+# Avoid importing pandas
 
 # Set page configuration
 st.set_page_config(
@@ -652,40 +652,46 @@ else:
         if st.session_state.bulk_transcription_completed and st.session_state.bulk_transcription_results:
             st.subheader("Bulk-transkriptionsresultat")
             
-            try:
-                # Create a DataFrame from the results
-                results_df = pd.DataFrame(st.session_state.bulk_transcription_results)
-                
-                # Display the results in a table
-                st.dataframe(results_df)
-                
-                # Create CSV for download
-                csv = results_df.to_csv(index=False)
-                
-                # Create a download button
-                st.download_button(
-                    label="Ladda ner resultat som CSV",
-                    data=csv,
-                    file_name="transkriptionsresultat.csv",
-                    mime="text/csv"
-                )
-            except Exception as e:
-                st.error(f"Kunde inte visa resultattabellen: {str(e)}")
-                # Fallback to showing results as text
-                st.write("Resultat (i textformat):")
-                for i, result in enumerate(st.session_state.bulk_transcription_results):
-                    st.write(f"**Fil {i+1}:** {result.get('filename', 'Okänd fil')}")
-                    st.write(result.get('transcription', 'Ingen transkription'))
-                    st.write("---")
-                
-                # Still offer download as JSON instead
-                json_data = json.dumps(st.session_state.bulk_transcription_results, ensure_ascii=False)
-                st.download_button(
-                    label="Ladda ner resultat som JSON",
-                    data=json_data,
-                    file_name="transkriptionsresultat.json",
-                    mime="application/json"
-                )
+            # Create a simple table display without pandas
+            st.write("### Transkriptionsresultat")
+            
+            # Display the results in a table format
+            table_data = [["Filnamn", "Transkription"]]
+            for result in st.session_state.bulk_transcription_results:
+                table_data.append([
+                    result.get('filename', 'Okänd fil'),
+                    result.get('transcription', 'Ingen transkription')
+                ])
+            
+            # Use Streamlit's native table display
+            st.table(table_data)
+            
+            # Generate CSV data manually without pandas
+            csv_content = io.StringIO()
+            csv_writer = csv.writer(csv_content)
+            csv_writer.writerow(["filename", "transcription"])
+            for result in st.session_state.bulk_transcription_results:
+                csv_writer.writerow([
+                    result.get('filename', ''),
+                    result.get('transcription', '')
+                ])
+            
+            # Create a download button for CSV
+            st.download_button(
+                label="Ladda ner resultat som CSV",
+                data=csv_content.getvalue(),
+                file_name="transkriptionsresultat.csv",
+                mime="text/csv"
+            )
+            
+            # Also offer JSON download as alternative
+            json_data = json.dumps(st.session_state.bulk_transcription_results, ensure_ascii=False)
+            st.download_button(
+                label="Ladda ner resultat som JSON",
+                data=json_data,
+                file_name="transkriptionsresultat.json",
+                mime="application/json"
+            )
             
             # Option to clear results
             if st.button("Rensa resultat och transkribera nya filer"):
