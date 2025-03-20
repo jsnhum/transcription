@@ -7,6 +7,8 @@ from PIL import Image
 import io
 import base64
 from datetime import datetime
+# Import pandas at the beginning to avoid dynamic import issues
+import pandas as pd
 
 # Set page configuration
 st.set_page_config(
@@ -114,6 +116,69 @@ def process_transcription(image, prompt, update_history=True):
     client = get_client()
     base64_image = image_to_base64(image)
     
+    # Check if we're using an older version of the SDK without vision support
+    import anthropic
+    import pkg_resources
+    
+    # Try to get the SDK version
+    try:
+        sdk_version = pkg_resources.get_distribution("anthropic").version
+        use_old_version = pkg_resources.parse_version(sdk_version) < pkg_resources.parse_version("0.17.0")
+    except:
+        # If we can't determine the version, assume it's too old
+        use_old_version = True
+    
+    # For older versions that don't support vision
+    if use_old_version:
+        st.warning("Din version av Anthropic SDK stödjer inte bildanalys. Använder enbart textprompt.")
+        
+        # Create a simple prompt asking to transcribe handwritten text
+        simple_prompt = f"""
+        Du behöver transkribera en bild av handskriven text som jag inte kan visa dig. 
+        Men jag ber dig svara på detta meddelande som om du hade sett bilden och transkriberat texten.
+        
+        Jag ber dig skriva:
+        "Jag har analyserat den handskrivna texten och här är transkriptionen:
+        
+        [Transkription saknas - tekniskt problem]"
+        
+        Skriv bara exakt så, inget mer, eftersom detta är ett tekniskt test.
+        """
+        
+        # Try to use the completion API if available
+        if hasattr(client, 'completion'):
+            try:
+                # Legacy prompt format
+                if hasattr(anthropic, 'HUMAN_PROMPT'):
+                    # If SDK has these constants
+                    human_prompt = anthropic.HUMAN_PROMPT
+                    ai_prompt = anthropic.AI_PROMPT
+                else:
+                    # Hardcoded values if constants aren't available
+                    human_prompt = "\n\nHuman: "
+                    ai_prompt = "\n\nAssistant: "
+                
+                legacy_prompt = human_prompt + simple_prompt + ai_prompt
+                
+                response = client.completion(
+                    prompt=legacy_prompt,
+                    model="claude-2",  # Older model compatible with older SDK
+                    max_tokens_to_sample=1000,
+                    stop_sequences=[human_prompt]
+                )
+                
+                if hasattr(response, 'completion'):
+                    transcription = response.completion
+                else:
+                    transcription = str(response)
+                
+                # Return with notice about vision limitation
+                return "[BEGRÄNSNING: Bildtranskription stöds inte med denna version av Anthropic SDK]\n\n" + transcription
+            except Exception as e:
+                st.error(f"Fel vid API-anrop: {str(e)}")
+                return "Ett tekniskt fel uppstod. Din version av Anthropic SDK stödjer inte bildanalys."
+    
+    # For newer SDK versions, proceed with vision support
     # Construct the complete message history for context
     messages = []
     
@@ -143,93 +208,22 @@ def process_transcription(image, prompt, update_history=True):
     # Add to the messages for the API call
     messages.append(user_message)
     
-    # Try to detect which API to use
-    import anthropic
-    
     try:
-        # First attempt - try the modern messages API
+        # Check if we're using the modern messages API
         if hasattr(client, 'messages') and hasattr(client.messages, 'create'):
+            # Modern API (0.13.0+)
             response = client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=1000,
                 messages=messages
             )
             transcription = response.content[0].text
-        
-        # Second attempt - try the completion API
-        elif hasattr(client, 'completion'):
-            # For older SDK versions that use the completion method
-            
-            # Create a prompt in the format the older API expects
-            if hasattr(anthropic, 'HUMAN_PROMPT'):
-                # If SDK has these constants
-                human_prompt = anthropic.HUMAN_PROMPT
-                ai_prompt = anthropic.AI_PROMPT
-            else:
-                # Hardcoded values if constants aren't available
-                human_prompt = "\n\nHuman: "
-                ai_prompt = "\n\nAssistant: "
-            
-            # Start building the conversation history
-            legacy_prompt = human_prompt
-            legacy_prompt += f"Transkribera texten från bilden jag har laddat upp: {prompt}"
-            legacy_prompt += ai_prompt
-            
-            # Call the legacy API
-            response = client.completion(
-                prompt=legacy_prompt,
-                model="claude-2",  # Older model compatible with older SDK
-                max_tokens_to_sample=1000,
-                stop_sequences=[human_prompt]
-            )
-            
-            # Extract the completion text
-            if hasattr(response, 'completion'):
-                transcription = response.completion
-            else:
-                # Fallback if response structure is different
-                transcription = str(response)
-                
-        # Third attempt - as a last resort, use a direct POST request
         else:
-            st.warning("Fallback-metod används för API-anrop. Detta kan vara mindre tillförlitligt.")
-            
-            import requests
-            import json
-            
-            # Simplified representation of the conversation
-            simple_prompt = f"Transkribera texten från bilden: {prompt}"
-            
-            # Construct a direct API request (most compatible approach)
-            headers = {
-                "x-api-key": client.api_key,
-                "content-type": "application/json",
-                "anthropic-version": "2023-06-01"  # Lägg till obligatorisk version-header
-            }
-            
-            payload = {
-                "model": "claude-2",
-                "prompt": f"\n\nHuman: {simple_prompt}\n\nAssistant: ",
-                "max_tokens_to_sample": 1000,
-                "stop_sequences": ["\n\nHuman:"]
-            }
-            
-            # Make a direct API call
-            response = requests.post(
-                "https://api.anthropic.com/v1/complete",
-                headers=headers,
-                data=json.dumps(payload)
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                transcription = result.get('completion', 'Ingen transkription returnerades')
-            else:
-                raise Exception(f"API-anrop misslyckades: {response.status_code}, {response.text}")
+            raise ValueError("Denna version av Anthropic SDK stödjer inte Claude Vision.")
     
     except Exception as e:
-        st.error(f"Fel vid transkription: {str(e)}")
-        raise e
+        st.error(f"Fel vid API-anrop: {str(e)}")
+        return f"Ett fel uppstod: {str(e)}. För att använda bildtranskribering, vänligen använd en modernare version av Anthropic SDK som stödjer Claude Vision."
     
     # If we should update the history (training mode), add the exchange to conversation history
     if update_history:
@@ -658,23 +652,40 @@ else:
         if st.session_state.bulk_transcription_completed and st.session_state.bulk_transcription_results:
             st.subheader("Bulk-transkriptionsresultat")
             
-            # Create a DataFrame from the results
-            import pandas as pd
-            results_df = pd.DataFrame(st.session_state.bulk_transcription_results)
-            
-            # Display the results in a table
-            st.dataframe(results_df)
-            
-            # Create CSV for download
-            csv = results_df.to_csv(index=False)
-            
-            # Create a download button
-            st.download_button(
-                label="Ladda ner resultat som CSV",
-                data=csv,
-                file_name="transkriptionsresultat.csv",
-                mime="text/csv"
-            )
+            try:
+                # Create a DataFrame from the results
+                results_df = pd.DataFrame(st.session_state.bulk_transcription_results)
+                
+                # Display the results in a table
+                st.dataframe(results_df)
+                
+                # Create CSV for download
+                csv = results_df.to_csv(index=False)
+                
+                # Create a download button
+                st.download_button(
+                    label="Ladda ner resultat som CSV",
+                    data=csv,
+                    file_name="transkriptionsresultat.csv",
+                    mime="text/csv"
+                )
+            except Exception as e:
+                st.error(f"Kunde inte visa resultattabellen: {str(e)}")
+                # Fallback to showing results as text
+                st.write("Resultat (i textformat):")
+                for i, result in enumerate(st.session_state.bulk_transcription_results):
+                    st.write(f"**Fil {i+1}:** {result.get('filename', 'Okänd fil')}")
+                    st.write(result.get('transcription', 'Ingen transkription'))
+                    st.write("---")
+                
+                # Still offer download as JSON instead
+                json_data = json.dumps(st.session_state.bulk_transcription_results, ensure_ascii=False)
+                st.download_button(
+                    label="Ladda ner resultat som JSON",
+                    data=json_data,
+                    file_name="transkriptionsresultat.json",
+                    mime="application/json"
+                )
             
             # Option to clear results
             if st.button("Rensa resultat och transkribera nya filer"):
