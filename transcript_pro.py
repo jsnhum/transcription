@@ -7,8 +7,6 @@ from PIL import Image
 import io
 import base64
 from datetime import datetime
-import csv
-# Avoid importing pandas
 
 # Set page configuration
 st.set_page_config(
@@ -17,44 +15,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Define a local wrapper function for Anthropic client creation
-def create_anthropic_client(api_key):
-    """En enkel wrapper för att skapa en Anthropic-klient oavsett SDK-version."""
-    import anthropic
-    import inspect
-    
-    try:
-        # Kontrollera om Client-klassen finns (äldre versioner)
-        if hasattr(anthropic, 'Client'):
-            # För äldre versioner av SDK
-            return anthropic.Client(api_key=api_key)
-        # För nyare versioner av SDK
-        elif hasattr(anthropic, 'Anthropic'):
-            return anthropic.Anthropic(api_key=api_key)
-        else:
-            raise AttributeError("Kunde inte hitta varken Client eller Anthropic i SDK")
-    except TypeError as e:
-        # Om vi får TypeError, prova att skapa klienten på annat sätt
-        st.sidebar.warning(f"Kompatibilitetsproblem: {str(e)}")
-        
-        # För vissa versioner kan proxies-parametern orsaka problem
-        # Skapa ett nytt objekt med bara api_key
-        if hasattr(anthropic, 'Client'):
-            # Skapa ett objekt av Client-klassen
-            client = object.__new__(anthropic.Client)
-            # Sätt api_key direkt
-            client.api_key = api_key
-            return client
-        elif hasattr(anthropic, 'Anthropic'):
-            # Skapa ett objekt av Anthropic-klassen
-            client = object.__new__(anthropic.Anthropic)
-            # Sätt api_key direkt
-            client.api_key = api_key
-            return client
-        else:
-            raise ValueError("Kunde inte skapa klient med någon metod")
-
-# Initialize Anthropic client using the wrapper
+# Initialize Anthropic client
 @st.cache_resource
 def get_client():
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -62,8 +23,7 @@ def get_client():
         api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
     if not api_key:
         raise ValueError("Ingen Anthropic API-nyckel hittades. Ange ANTHROPIC_API_KEY som miljövariabel.")
-    
-    return create_anthropic_client(api_key)
+    return anthropic.Anthropic(api_key=api_key)
 
 # Convert image to base64 for Anthropic API
 def image_to_base64(img):
@@ -79,7 +39,7 @@ if "current_workflow_stage" not in st.session_state:
 if "current_iteration" not in st.session_state:
     st.session_state.current_iteration = 0
 if "default_prompt" not in st.session_state:
-    st.session_state.default_prompt = "Vänligen transkribera den handskrivna texten i denna manuskriptbild så noggrant som möjligt. Inkludera endast den transkriberade texten utan någon ytterligare kommentar."
+    st.session_state.default_prompt = "Vänligen transkribera den handskrivna texten i denna manuskriptbild så noggrant som möjligt. Läs rad för rad, och ord för ord. När du är klar, läs hela transkriptionen och giv akt på sammanhanget och språklig logik Inkludera endast den transkriberade texten i ditt svar utan någon ytterligare kommentar."
 if "app_mode" not in st.session_state:
     st.session_state.app_mode = "training"  # "training" or "direct"
 if "direct_mode_type" not in st.session_state:
@@ -111,74 +71,11 @@ def load_training_history(json_string):
         st.error(f"Fel vid inläsning av träningshistorik: {str(e)}")
         return False
 
-# Function to handle the transcription process - Compatible with multiple SDK versions
+# Function to handle the transcription process
 def process_transcription(image, prompt, update_history=True):
     client = get_client()
     base64_image = image_to_base64(image)
     
-    # Check if we're using an older version of the SDK without vision support
-    import anthropic
-    import pkg_resources
-    
-    # Try to get the SDK version
-    try:
-        sdk_version = pkg_resources.get_distribution("anthropic").version
-        use_old_version = pkg_resources.parse_version(sdk_version) < pkg_resources.parse_version("0.17.0")
-    except:
-        # If we can't determine the version, assume it's too old
-        use_old_version = True
-    
-    # For older versions that don't support vision
-    if use_old_version:
-        st.warning("Din version av Anthropic SDK stödjer inte bildanalys. Använder enbart textprompt.")
-        
-        # Create a simple prompt asking to transcribe handwritten text
-        simple_prompt = f"""
-        Du behöver transkribera en bild av handskriven text som jag inte kan visa dig. 
-        Men jag ber dig svara på detta meddelande som om du hade sett bilden och transkriberat texten.
-        
-        Jag ber dig skriva:
-        "Jag har analyserat den handskrivna texten och här är transkriptionen:
-        
-        [Transkription saknas - tekniskt problem]"
-        
-        Skriv bara exakt så, inget mer, eftersom detta är ett tekniskt test.
-        """
-        
-        # Try to use the completion API if available
-        if hasattr(client, 'completion'):
-            try:
-                # Legacy prompt format
-                if hasattr(anthropic, 'HUMAN_PROMPT'):
-                    # If SDK has these constants
-                    human_prompt = anthropic.HUMAN_PROMPT
-                    ai_prompt = anthropic.AI_PROMPT
-                else:
-                    # Hardcoded values if constants aren't available
-                    human_prompt = "\n\nHuman: "
-                    ai_prompt = "\n\nAssistant: "
-                
-                legacy_prompt = human_prompt + simple_prompt + ai_prompt
-                
-                response = client.completion(
-                    prompt=legacy_prompt,
-                    model="claude-2",  # Older model compatible with older SDK
-                    max_tokens_to_sample=1000,
-                    stop_sequences=[human_prompt]
-                )
-                
-                if hasattr(response, 'completion'):
-                    transcription = response.completion
-                else:
-                    transcription = str(response)
-                
-                # Return with notice about vision limitation
-                return "[BEGRÄNSNING: Bildtranskription stöds inte med denna version av Anthropic SDK]\n\n" + transcription
-            except Exception as e:
-                st.error(f"Fel vid API-anrop: {str(e)}")
-                return "Ett tekniskt fel uppstod. Din version av Anthropic SDK stödjer inte bildanalys."
-    
-    # For newer SDK versions, proceed with vision support
     # Construct the complete message history for context
     messages = []
     
@@ -208,22 +105,14 @@ def process_transcription(image, prompt, update_history=True):
     # Add to the messages for the API call
     messages.append(user_message)
     
-    try:
-        # Check if we're using the modern messages API
-        if hasattr(client, 'messages') and hasattr(client.messages, 'create'):
-            # Modern API (0.13.0+)
-            response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1000,
-                messages=messages
-            )
-            transcription = response.content[0].text
-        else:
-            raise ValueError("Denna version av Anthropic SDK stödjer inte Claude Vision.")
+    # Call Claude API
+    response = client.messages.create(
+        model="claude-3-5-sonnet-20241022",
+        max_tokens=1000,
+        messages=messages
+    )
     
-    except Exception as e:
-        st.error(f"Fel vid API-anrop: {str(e)}")
-        return f"Ett fel uppstod: {str(e)}. För att använda bildtranskribering, vänligen använd en modernare version av Anthropic SDK som stödjer Claude Vision."
+    transcription = response.content[0].text
     
     # If we should update the history (training mode), add the exchange to conversation history
     if update_history:
@@ -652,45 +541,22 @@ else:
         if st.session_state.bulk_transcription_completed and st.session_state.bulk_transcription_results:
             st.subheader("Bulk-transkriptionsresultat")
             
-            # Create a simple table display without pandas
-            st.write("### Transkriptionsresultat")
+            # Create a DataFrame from the results
+            import pandas as pd
+            results_df = pd.DataFrame(st.session_state.bulk_transcription_results)
             
-            # Display the results in a table format
-            table_data = [["Filnamn", "Transkription"]]
-            for result in st.session_state.bulk_transcription_results:
-                table_data.append([
-                    result.get('filename', 'Okänd fil'),
-                    result.get('transcription', 'Ingen transkription')
-                ])
+            # Display the results in a table
+            st.dataframe(results_df)
             
-            # Use Streamlit's native table display
-            st.table(table_data)
+            # Create CSV for download
+            csv = results_df.to_csv(index=False)
             
-            # Generate CSV data manually without pandas
-            csv_content = io.StringIO()
-            csv_writer = csv.writer(csv_content)
-            csv_writer.writerow(["filename", "transcription"])
-            for result in st.session_state.bulk_transcription_results:
-                csv_writer.writerow([
-                    result.get('filename', ''),
-                    result.get('transcription', '')
-                ])
-            
-            # Create a download button for CSV
+            # Create a download button
             st.download_button(
                 label="Ladda ner resultat som CSV",
-                data=csv_content.getvalue(),
+                data=csv,
                 file_name="transkriptionsresultat.csv",
                 mime="text/csv"
-            )
-            
-            # Also offer JSON download as alternative
-            json_data = json.dumps(st.session_state.bulk_transcription_results, ensure_ascii=False)
-            st.download_button(
-                label="Ladda ner resultat som JSON",
-                data=json_data,
-                file_name="transkriptionsresultat.json",
-                mime="application/json"
             )
             
             # Option to clear results
