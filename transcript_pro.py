@@ -15,7 +15,44 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize Anthropic client - Version-independent approach
+# Define a local wrapper function for Anthropic client creation
+def create_anthropic_client(api_key):
+    """En enkel wrapper för att skapa en Anthropic-klient oavsett SDK-version."""
+    import anthropic
+    import inspect
+    
+    try:
+        # Kontrollera om Client-klassen finns (äldre versioner)
+        if hasattr(anthropic, 'Client'):
+            # För äldre versioner av SDK
+            return anthropic.Client(api_key=api_key)
+        # För nyare versioner av SDK
+        elif hasattr(anthropic, 'Anthropic'):
+            return anthropic.Anthropic(api_key=api_key)
+        else:
+            raise AttributeError("Kunde inte hitta varken Client eller Anthropic i SDK")
+    except TypeError as e:
+        # Om vi får TypeError, prova att skapa klienten på annat sätt
+        st.sidebar.warning(f"Kompatibilitetsproblem: {str(e)}")
+        
+        # För vissa versioner kan proxies-parametern orsaka problem
+        # Skapa ett nytt objekt med bara api_key
+        if hasattr(anthropic, 'Client'):
+            # Skapa ett objekt av Client-klassen
+            client = object.__new__(anthropic.Client)
+            # Sätt api_key direkt
+            client.api_key = api_key
+            return client
+        elif hasattr(anthropic, 'Anthropic'):
+            # Skapa ett objekt av Anthropic-klassen
+            client = object.__new__(anthropic.Anthropic)
+            # Sätt api_key direkt
+            client.api_key = api_key
+            return client
+        else:
+            raise ValueError("Kunde inte skapa klient med någon metod")
+
+# Initialize Anthropic client using the wrapper
 @st.cache_resource
 def get_client():
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -24,36 +61,7 @@ def get_client():
     if not api_key:
         raise ValueError("Ingen Anthropic API-nyckel hittades. Ange ANTHROPIC_API_KEY som miljövariabel.")
     
-    # Try to determine which version of the Anthropic SDK we're using
-    import anthropic
-    import inspect
-    
-    # Try to get the version
-    try:
-        version = anthropic.__version__
-        st.sidebar.text(f"Anthropic SDK version: {version}")
-    except:
-        st.sidebar.text("Kunde inte fastställa Anthropic SDK-version")
-    
-    try:
-        # Check if Anthropic or Client is the main class
-        if hasattr(anthropic, 'Anthropic'):
-            # Modern SDK (0.13.0+)
-            return anthropic.Anthropic(api_key=api_key)
-        elif hasattr(anthropic, 'Client'):
-            # Legacy SDK
-            return anthropic.Client(api_key=api_key)
-        else:
-            raise ValueError("Kunde inte identifiera rätt Anthropic-klientklass")
-    except TypeError as e:
-        # Handle the case where unexpected arguments are passed
-        st.sidebar.error(f"TypeError vid initiering av klienten: {str(e)}")
-        
-        # Try again with minimal arguments
-        if hasattr(anthropic, 'Anthropic'):
-            return anthropic.Anthropic(api_key=api_key)
-        else:
-            return anthropic.Client(api_key=api_key)
+    return create_anthropic_client(api_key)
 
 # Convert image to base64 for Anthropic API
 def image_to_base64(img):
@@ -101,7 +109,7 @@ def load_training_history(json_string):
         st.error(f"Fel vid inläsning av träningshistorik: {str(e)}")
         return False
 
-# Function to handle the transcription process - Version-independent approach
+# Function to handle the transcription process - Compatible with multiple SDK versions
 def process_transcription(image, prompt, update_history=True):
     client = get_client()
     base64_image = image_to_base64(image)
@@ -135,59 +143,91 @@ def process_transcription(image, prompt, update_history=True):
     # Add to the messages for the API call
     messages.append(user_message)
     
-    # Detect which API style to use based on client methods
+    # Try to detect which API to use
     import anthropic
     
     try:
-        # Check if we're using the modern messages API
+        # First attempt - try the modern messages API
         if hasattr(client, 'messages') and hasattr(client.messages, 'create'):
-            # Modern API (0.13.0+)
             response = client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=1000,
                 messages=messages
             )
             transcription = response.content[0].text
+        
+        # Second attempt - try the completion API
         elif hasattr(client, 'completion'):
-            # Legacy API - reconstruct the prompt in Claude Instant format
-            system_prompt = "You are an assistant that accurately transcribes handwritten text from images."
+            # For older SDK versions that use the completion method
             
-            # Start building the legacy prompt
-            legacy_prompt = anthropic.HUMAN_PROMPT
+            # Create a prompt in the format the older API expects
+            if hasattr(anthropic, 'HUMAN_PROMPT'):
+                # If SDK has these constants
+                human_prompt = anthropic.HUMAN_PROMPT
+                ai_prompt = anthropic.AI_PROMPT
+            else:
+                # Hardcoded values if constants aren't available
+                human_prompt = "\n\nHuman: "
+                ai_prompt = "\n\nAssistant: "
             
-            # Add context from previous conversation
-            for i, msg in enumerate(st.session_state.conversation_history):
-                if i % 2 == 0:  # User message
-                    if isinstance(msg["content"], list):
-                        # This is an image + text message, just extract the text part
-                        for content in msg["content"]:
-                            if content["type"] == "text":
-                                legacy_prompt += content["text"] + "\n"
-                    else:
-                        legacy_prompt += msg["content"] + "\n"
-                    legacy_prompt += anthropic.AI_PROMPT
-                else:  # Assistant message
-                    legacy_prompt += msg["content"] + "\n"
-                    legacy_prompt += anthropic.HUMAN_PROMPT
-            
-            # Add the current prompt
-            legacy_prompt += f"Here is a handwritten text image. Please transcribe the text exactly as written: {prompt}" + anthropic.AI_PROMPT
+            # Start building the conversation history
+            legacy_prompt = human_prompt
+            legacy_prompt += f"Transkribera texten från bilden jag har laddat upp: {prompt}"
+            legacy_prompt += ai_prompt
             
             # Call the legacy API
             response = client.completion(
                 prompt=legacy_prompt,
-                model="claude-2",  # Adjust model as needed for legacy API
+                model="claude-2",  # Older model compatible with older SDK
                 max_tokens_to_sample=1000,
-                stop_sequences=[anthropic.HUMAN_PROMPT]
+                stop_sequences=[human_prompt]
             )
-            transcription = response.completion
+            
+            # Extract the completion text
+            if hasattr(response, 'completion'):
+                transcription = response.completion
+            else:
+                # Fallback if response structure is different
+                transcription = str(response)
+                
+        # Third attempt - as a last resort, use a direct POST request
         else:
-            raise ValueError("Kunde inte identifiera Anthropic API-metod")
+            st.warning("Fallback-metod används för API-anrop. Detta kan vara mindre tillförlitligt.")
+            
+            import requests
+            import json
+            
+            # Simplified representation of the conversation
+            simple_prompt = f"Transkribera texten från bilden: {prompt}"
+            
+            # Construct a direct API request (most compatible approach)
+            headers = {
+                "x-api-key": client.api_key,
+                "content-type": "application/json"
+            }
+            
+            payload = {
+                "model": "claude-2",
+                "prompt": f"\n\nHuman: {simple_prompt}\n\nAssistant: ",
+                "max_tokens_to_sample": 1000,
+                "stop_sequences": ["\n\nHuman:"]
+            }
+            
+            # Make a direct API call
+            response = requests.post(
+                "https://api.anthropic.com/v1/complete",
+                headers=headers,
+                data=json.dumps(payload)
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                transcription = result.get('completion', 'Ingen transkription returnerades')
+            else:
+                raise Exception(f"API-anrop misslyckades: {response.status_code}, {response.text}")
     
     except Exception as e:
-        st.error(f"API-fel: {str(e)}")
-        st.write("Detaljerad felinformation:")
-        st.write(e)
+        st.error(f"Fel vid transkription: {str(e)}")
         raise e
     
     # If we should update the history (training mode), add the exchange to conversation history
