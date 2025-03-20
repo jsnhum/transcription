@@ -203,7 +203,8 @@ def process_transcription(image, prompt, update_history=True):
             # Construct a direct API request (most compatible approach)
             headers = {
                 "x-api-key": client.api_key,
-                "content-type": "application/json"
+                "content-type": "application/json",
+                "anthropic-version": "2023-06-01"  # Lägg till obligatorisk version-header
             }
             
             payload = {
