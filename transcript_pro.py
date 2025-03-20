@@ -15,7 +15,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize Anthropic client
+# Initialize Anthropic client - Version-independent approach
 @st.cache_resource
 def get_client():
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -23,7 +23,37 @@ def get_client():
         api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
     if not api_key:
         raise ValueError("Ingen Anthropic API-nyckel hittades. Ange ANTHROPIC_API_KEY som miljövariabel.")
-    return anthropic.Anthropic(api_key=api_key)
+    
+    # Try to determine which version of the Anthropic SDK we're using
+    import anthropic
+    import inspect
+    
+    # Try to get the version
+    try:
+        version = anthropic.__version__
+        st.sidebar.text(f"Anthropic SDK version: {version}")
+    except:
+        st.sidebar.text("Kunde inte fastställa Anthropic SDK-version")
+    
+    try:
+        # Check if Anthropic or Client is the main class
+        if hasattr(anthropic, 'Anthropic'):
+            # Modern SDK (0.13.0+)
+            return anthropic.Anthropic(api_key=api_key)
+        elif hasattr(anthropic, 'Client'):
+            # Legacy SDK
+            return anthropic.Client(api_key=api_key)
+        else:
+            raise ValueError("Kunde inte identifiera rätt Anthropic-klientklass")
+    except TypeError as e:
+        # Handle the case where unexpected arguments are passed
+        st.sidebar.error(f"TypeError vid initiering av klienten: {str(e)}")
+        
+        # Try again with minimal arguments
+        if hasattr(anthropic, 'Anthropic'):
+            return anthropic.Anthropic(api_key=api_key)
+        else:
+            return anthropic.Client(api_key=api_key)
 
 # Convert image to base64 for Anthropic API
 def image_to_base64(img):
@@ -39,7 +69,7 @@ if "current_workflow_stage" not in st.session_state:
 if "current_iteration" not in st.session_state:
     st.session_state.current_iteration = 0
 if "default_prompt" not in st.session_state:
-    st.session_state.default_prompt = "Vänligen transkribera den handskrivna texten i denna manuskriptbild så noggrant som möjligt. Läs rad för rad, och ord för ord. När du är klar, läs hela transkriptionen och giv akt på sammanhanget och språklig logik Inkludera endast den transkriberade texten i ditt svar utan någon ytterligare kommentar."
+    st.session_state.default_prompt = "Vänligen transkribera den handskrivna texten i denna manuskriptbild så noggrant som möjligt. Inkludera endast den transkriberade texten utan någon ytterligare kommentar."
 if "app_mode" not in st.session_state:
     st.session_state.app_mode = "training"  # "training" or "direct"
 if "direct_mode_type" not in st.session_state:
@@ -71,7 +101,7 @@ def load_training_history(json_string):
         st.error(f"Fel vid inläsning av träningshistorik: {str(e)}")
         return False
 
-# Function to handle the transcription process
+# Function to handle the transcription process - Version-independent approach
 def process_transcription(image, prompt, update_history=True):
     client = get_client()
     base64_image = image_to_base64(image)
@@ -105,14 +135,60 @@ def process_transcription(image, prompt, update_history=True):
     # Add to the messages for the API call
     messages.append(user_message)
     
-    # Call Claude API
-    response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=1000,
-        messages=messages
-    )
+    # Detect which API style to use based on client methods
+    import anthropic
     
-    transcription = response.content[0].text
+    try:
+        # Check if we're using the modern messages API
+        if hasattr(client, 'messages') and hasattr(client.messages, 'create'):
+            # Modern API (0.13.0+)
+            response = client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1000,
+                messages=messages
+            )
+            transcription = response.content[0].text
+        elif hasattr(client, 'completion'):
+            # Legacy API - reconstruct the prompt in Claude Instant format
+            system_prompt = "You are an assistant that accurately transcribes handwritten text from images."
+            
+            # Start building the legacy prompt
+            legacy_prompt = anthropic.HUMAN_PROMPT
+            
+            # Add context from previous conversation
+            for i, msg in enumerate(st.session_state.conversation_history):
+                if i % 2 == 0:  # User message
+                    if isinstance(msg["content"], list):
+                        # This is an image + text message, just extract the text part
+                        for content in msg["content"]:
+                            if content["type"] == "text":
+                                legacy_prompt += content["text"] + "\n"
+                    else:
+                        legacy_prompt += msg["content"] + "\n"
+                    legacy_prompt += anthropic.AI_PROMPT
+                else:  # Assistant message
+                    legacy_prompt += msg["content"] + "\n"
+                    legacy_prompt += anthropic.HUMAN_PROMPT
+            
+            # Add the current prompt
+            legacy_prompt += f"Here is a handwritten text image. Please transcribe the text exactly as written: {prompt}" + anthropic.AI_PROMPT
+            
+            # Call the legacy API
+            response = client.completion(
+                prompt=legacy_prompt,
+                model="claude-2",  # Adjust model as needed for legacy API
+                max_tokens_to_sample=1000,
+                stop_sequences=[anthropic.HUMAN_PROMPT]
+            )
+            transcription = response.completion
+        else:
+            raise ValueError("Kunde inte identifiera Anthropic API-metod")
+    
+    except Exception as e:
+        st.error(f"API-fel: {str(e)}")
+        st.write("Detaljerad felinformation:")
+        st.write(e)
+        raise e
     
     # If we should update the history (training mode), add the exchange to conversation history
     if update_history:
