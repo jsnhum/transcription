@@ -251,7 +251,7 @@ if st.session_state.app_mode == "training":
                 # Process the uploaded image
                 image = Image.open(uploaded_file)
                 st.session_state.current_image = image
-                st.image(image, caption="Uppladdat manuskript", use_column_width=True)
+                st.image(image, caption="Uppladdat manuskript", use_container_width=True)
                 
                 # Move to the next stage
                 st.session_state.current_workflow_stage = "prompt"
@@ -261,7 +261,7 @@ if st.session_state.app_mode == "training":
     elif st.session_state.current_workflow_stage == "prompt" and "current_image" in st.session_state:
         with col1:
             st.subheader("Uppladdat manuskript")
-            st.image(st.session_state.current_image, caption=f"Iteration {st.session_state.current_iteration + 1}", use_column_width=True)
+            st.image(st.session_state.current_image, caption=f"Iteration {st.session_state.current_iteration + 1}", use_container_width=True)
         
         with col2:
             st.subheader("Steg 2: Anpassa prompt och transkribera")
@@ -298,7 +298,7 @@ if st.session_state.app_mode == "training":
     elif st.session_state.current_workflow_stage == "transcribe" and "current_transcription" in st.session_state:
         with col1:
             st.subheader("Uppladdat manuskript")
-            st.image(st.session_state.current_image, caption=f"Iteration {st.session_state.current_iteration + 1}", use_column_width=True)
+            st.image(st.session_state.current_image, caption=f"Iteration {st.session_state.current_iteration + 1}", use_container_width=True)
         
         with col2:
             st.subheader("Steg 3: Claudes transkription")
@@ -353,7 +353,7 @@ Var specifik i din analys för att kunna förbättra din förmåga att transkrib
     elif st.session_state.current_workflow_stage == "reflection" and "current_reflection" in st.session_state:
         with col1:
             st.subheader("Uppladdat manuskript")
-            st.image(st.session_state.current_image, caption=f"Iteration {st.session_state.current_iteration}", use_column_width=True)
+            st.image(st.session_state.current_image, caption=f"Iteration {st.session_state.current_iteration}", use_container_width=True)
         
         with col2:
             st.subheader("Claudes reflektion")
